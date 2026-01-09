@@ -53,24 +53,66 @@ def load_model_safe():
 def classical_defect_detection(image_np):
     gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
 
-    # Edge detection
+    # Step 1: Edge detection
     edges = cv2.Canny(gray, 80, 160)
 
-    # Morphological operations to enhance defects
-    kernel = np.ones((3, 3), np.uint8)
-    dilated = cv2.dilate(edges, kernel, iterations=2)
+    # Step 2: Morphological closing to connect defect regions
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    # Defect mask
-    defect_mask = dilated
+    # Step 3: Binary threshold
+    _, binary = cv2.threshold(closed, 50, 255, cv2.THRESH_BINARY)
 
-    # Defect score (percentage of abnormal pixels)
-    defect_score = np.sum(defect_mask > 0) / defect_mask.size
+    # Step 4: Find contours (potential defect regions)
+    contours, _ = cv2.findContours(
+        binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
 
-    # Overlay
-    heatmap = cv2.applyColorMap(defect_mask, cv2.COLORMAP_JET)
-    overlay = cv2.addWeighted(image_np, 0.7, heatmap, 0.3, 0)
+    overlay = image_np.copy()
+    defect_score = 0.0
+
+    if contours:
+        # Select largest contour (most significant defect)
+        largest = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest)
+
+        # Ignore very small noise
+        if area > 200:  # threshold can be tuned
+            defect_score = area / (image_np.shape[0] * image_np.shape[1])
+
+            # Bounding box
+            x, y, w, h = cv2.boundingRect(largest)
+            cv2.rectangle(
+                overlay,
+                (x, y),
+                (x + w, y + h),
+                (0, 0, 255),
+                2
+            )
+
+            # Minimum enclosing circle
+            (cx, cy), radius = cv2.minEnclosingCircle(largest)
+            cv2.circle(
+                overlay,
+                (int(cx), int(cy)),
+                int(radius),
+                (255, 0, 0),
+                2
+            )
+
+            # Label
+            cv2.putText(
+                overlay,
+                "DEFECT",
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 0, 255),
+                2
+            )
 
     return overlay, defect_score
+
 
 # --------------------------------------------------
 # PAGE 1 — OVERVIEW
@@ -126,12 +168,13 @@ elif page == "🔍 Inspect Industrial Image":
                 st.error(f"⚠ Defect Likely Detected (Score: {defect_score:.3f})")
             else:
                 st.success(f"✅ Surface Appears Normal (Score: {defect_score:.3f})")
-
             st.subheader("🧠 Defect Localization")
+
             st.image(
                 overlay,
-                caption="Highlighted regions indicate surface irregularities"
+                caption="🔲 Red box: defect boundary | 🔵 Blue circle: defect region"
             )
+
 
             st.info("""
             **How this works (Simple Explanation):**
