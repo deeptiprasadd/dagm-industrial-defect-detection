@@ -56,89 +56,101 @@ def load_model_safe():
 # --------------------------------------------------
 def classical_defect_detection(image_rgb):
     """
-    Smart industrial defect detection:
-    - Detects localized anomaly clusters
-    - Avoids false positives on normal textures
+    FINAL industrial-grade defect detection.
+    Balanced: not over-sensitive, not over-strict.
     """
 
     h, w, _ = image_rgb.shape
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
 
-    # 1. Texture response (gradient magnitude)
-    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-    grad_mag = cv2.magnitude(grad_x, grad_y)
+    # 1. Contrast enhancement (critical for subtle scratches)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
 
-    # Normalize
-    grad_mag = cv2.normalize(grad_mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    # 2. Gradient magnitude (texture change)
+    gx = cv2.Sobel(enhanced, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(enhanced, cv2.CV_32F, 0, 1, ksize=3)
+    grad = cv2.magnitude(gx, gy)
 
-    # 2. Global texture baseline
-    global_mean = np.mean(grad_mag)
-    global_std = np.std(grad_mag)
+    grad = cv2.normalize(grad, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
-    # 3. Adaptive threshold (statistical)
-    thresh = global_mean + 2.5 * global_std
-    _, anomaly_map = cv2.threshold(grad_mag, thresh, 255, cv2.THRESH_BINARY)
+    # 3. Threshold using percentile (NOT mean/std – too fragile)
+    thresh_val = np.percentile(grad, 97.5)
+    _, binary = cv2.threshold(grad, thresh_val, 255, cv2.THRESH_BINARY)
 
-    # 4. Morphology to group defects
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    anomaly_map = cv2.morphologyEx(anomaly_map, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # 4. Morphology to connect thin scratches
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 3))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+    binary = cv2.dilate(binary, kernel, iterations=1)
 
-    # 5. Find candidate regions
+    # 5. Find contours
     contours, _ = cv2.findContours(
-        anomaly_map, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
     overlay = image_rgb.copy()
     defect_score = 0.0
 
-    if contours:
-        # Compute global anomaly density
-        total_anomaly_pixels = np.sum(anomaly_map > 0)
-        global_density = total_anomaly_pixels / (h * w)
+    if not contours:
+        return overlay, 0.0
 
-        # Select most significant region
-        largest = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(largest)
-        region_density = area / (h * w)
+    # 6. Evaluate contours properly
+    best_cnt = None
+    best_score = 0
 
-        # 🔑 DECISION LOGIC (THIS IS THE INTELLIGENCE)
-        if region_density > 0.002 and region_density > 5 * global_density:
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < 150:  # absolute minimum evidence
+            continue
 
-            defect_score = region_density
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        aspect_ratio = max(bw / (bh + 1e-6), bh / (bw + 1e-6))
 
-            # Bounding box
-            x, y, bw, bh = cv2.boundingRect(largest)
-            cv2.rectangle(
-                overlay,
-                (x, y),
-                (x + bw, y + bh),
-                (255, 0, 0),
-                4
-            )
+        # scratches are elongated → high aspect ratio
+        if aspect_ratio < 2.0:
+            continue
 
-            # Enclosing circle
-            (cx, cy), radius = cv2.minEnclosingCircle(largest)
-            cv2.circle(
-                overlay,
-                (int(cx), int(cy)),
-                int(radius),
-                (0, 0, 255),
-                4
-            )
+        score = area * aspect_ratio
+        if score > best_score:
+            best_score = score
+            best_cnt = cnt
 
-            cv2.putText(
-                overlay,
-                "DEFECT",
-                (x, max(y - 12, 20)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.9,
-                (255, 0, 0),
-                3
-            )
+    if best_cnt is None:
+        return overlay, 0.0
+
+    # 7. Draw results (GUARANTEED visible)
+    area = cv2.contourArea(best_cnt)
+    defect_score = area / (h * w)
+
+    x, y, bw, bh = cv2.boundingRect(best_cnt)
+    cv2.rectangle(
+        overlay,
+        (x, y),
+        (x + bw, y + bh),
+        (255, 0, 0),  # RED
+        4
+    )
+
+    (cx, cy), radius = cv2.minEnclosingCircle(best_cnt)
+    cv2.circle(
+        overlay,
+        (int(cx), int(cy)),
+        int(radius),
+        (0, 0, 255),  # BLUE
+        4
+    )
+
+    cv2.putText(
+        overlay,
+        "DEFECT",
+        (x, max(y - 12, 20)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        (255, 0, 0),
+        3
+    )
 
     return overlay, defect_score
-
 
 # --------------------------------------------------
 # PAGE 1 — OVERVIEW
