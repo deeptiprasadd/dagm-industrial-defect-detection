@@ -9,9 +9,6 @@ from src.model import DefectCNN
 from src.transforms import image_transform
 from src.gradcam import GradCAM
 
-# --------------------------------------------------
-# Page Config
-# --------------------------------------------------
 st.set_page_config(
     page_title="Industrial Defect Detection",
     page_icon="🔍",
@@ -19,30 +16,34 @@ st.set_page_config(
 )
 
 # --------------------------------------------------
-# Sidebar Navigation
+# Sidebar
 # --------------------------------------------------
 st.sidebar.title("🔧 Navigation")
 page = st.sidebar.radio(
     "Select Section",
     [
         "🏠 Project Overview",
-        "🏭 Use Cases",
-        "⚙ How It Works",
-        "🧪 Try Sample Images",
-        "🔍 Inspect Image (with Explainability)",
+        "🔍 Inspect Industrial Image",
         "⚠ Limitations & Ethics"
     ]
 )
 
 # --------------------------------------------------
-# Load Model Once
+# Safe Model Loader
 # --------------------------------------------------
 @st.cache_resource
-def load_model():
+def load_model_safe():
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    if not os.path.exists("defect_model.pth"):
+        return None, None, device
+
     model = DefectCNN().to(device)
-    model.load_state_dict(torch.load("defect_model.pth", map_location=device))
+    model.load_state_dict(
+        torch.load("defect_model.pth", map_location=device)
+    )
     model.eval()
+
     cam = GradCAM(model, model.model.layer4[-1])
     return model, cam, device
 
@@ -50,164 +51,101 @@ def load_model():
 # PAGE 1 — OVERVIEW
 # --------------------------------------------------
 if page == "🏠 Project Overview":
-    st.title("AI-Based Industrial Defect Detection System")
+    st.title("AI-Based Industrial Defect Detection")
 
     st.markdown("""
-    ### 📌 Problem Statement
-    In manufacturing industries, surface defects such as scratches, cracks,
-    dents, or texture irregularities can reduce product quality and lead to
-    financial loss. Manual inspection is slow, subjective, and error-prone.
+    This application demonstrates how **Artificial Intelligence**
+    can be used to detect surface defects in industrial materials.
 
-    ### 🎯 Objective
-    This system uses **Artificial Intelligence and Computer Vision**
-    to automatically identify defective industrial surfaces using images.
+    The system is designed as a **decision-support tool** and
+    includes explainability to increase trust in predictions.
     """)
 
-    st.info("This system supports human decision-making. It does not replace human inspectors.")
+    st.info(
+        "Note: This public demo runs in **demo mode** unless a trained model is provided."
+    )
 
 # --------------------------------------------------
-# PAGE 2 — USE CASES
+# PAGE 2 — INSPECT IMAGE
 # --------------------------------------------------
-elif page == "🏭 Use Cases":
-    st.title("Industrial Use Cases")
-
-    st.markdown("""
-    **✔ Manufacturing Quality Control**
-    - Steel sheets
-    - Metal plates
-    - Fabric inspection
-
-    **✔ Automotive Industry**
-    - Component surface inspection
-    - Paint defect detection
-
-    **✔ Electronics Industry**
-    - PCB surface defects
-    - Material consistency checks
-
-    **✔ Academic & Research**
-    - Industrial AI research
-    - Explainable computer vision systems
-    """)
-
-# --------------------------------------------------
-# PAGE 3 — HOW IT WORKS
-# --------------------------------------------------
-elif page == "⚙ How It Works":
-    st.title("How the System Works")
-
-    st.markdown("""
-    **Step 1: Image Input**
-    - The system takes an industrial surface image.
-
-    **Step 2: Preprocessing**
-    - Image is resized and normalized.
-
-    **Step 3: Deep Learning Model**
-    - A CNN learns texture patterns.
-    - It distinguishes normal vs defective surfaces.
-
-    **Step 4: Explainability (Grad-CAM)**
-    - The system highlights **where the model is looking**.
-
-    **Step 5: Output**
-    - Defect / No Defect
-    - Confidence score
-    """)
-
-    st.warning("Best performance is achieved when input images are similar to training images.")
-
-# --------------------------------------------------
-# PAGE 4 — SAMPLE IMAGES
-# --------------------------------------------------
-elif page == "🧪 Try Sample Images":
-    st.title("Sample Industrial Images")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Normal Surface")
-        st.image("samples/sample_normal.bmp")
-
-    with col2:
-        st.subheader("Defective Surface")
-        st.image("samples/sample_defect.bmp")
-
-# --------------------------------------------------
-# PAGE 5 — INSPECT IMAGE + GRAD-CAM
-# --------------------------------------------------
-elif page == "🔍 Inspect Image (with Explainability)":
+elif page == "🔍 Inspect Industrial Image":
     st.title("Inspect Industrial Image")
 
-    st.markdown("""
-    **Upload Requirements**
-    - Industrial surface image
-    - Texture-based (metal, fabric, material)
-    - Formats: `.bmp`, `.png`, `.jpg`
-    """)
-
     uploaded = st.file_uploader(
-        "Upload an image",
+        "Upload an industrial surface image",
         type=["bmp", "png", "jpg", "jpeg"]
     )
 
     if uploaded:
-        model, cam, device = load_model()
         image = Image.open(uploaded).convert("RGB")
         st.image(image, caption="Uploaded Image")
 
+        model, cam, device = load_model_safe()
+
         x = image_transform(image).unsqueeze(0).to(device)
 
-        with torch.no_grad():
-            prob = torch.sigmoid(model(x)).item()
+        # ---------------- DEMO MODE ----------------
+        if model is None:
+            st.warning("Running in DEMO MODE (no trained model available).")
 
-        label = "DEFECT" if prob > 0.5 else "NO DEFECT"
+            gray = np.array(image.convert("L"))
+            heatmap = cv2.applyColorMap(gray, cv2.COLORMAP_JET)
+            overlay = cv2.addWeighted(
+                np.array(image), 0.6, heatmap, 0.4, 0
+            )
 
-        st.subheader("🔎 Prediction Result")
-        st.write(f"**Prediction:** {label}")
-        st.write(f"**Confidence:** {prob:.2f}")
+            st.subheader("🧠 Explainability (Illustrative)")
+            st.image(
+                overlay,
+                caption="Illustrative heatmap (demo mode)"
+            )
 
-        # Grad-CAM
-        heatmap = cam.generate(x)
-        heatmap = cv2.resize(heatmap, image.size)
-        heatmap = cv2.applyColorMap(
-            np.uint8(255 * heatmap),
-            cv2.COLORMAP_JET
-        )
+            st.info(
+                "In a full deployment, this heatmap would highlight regions influencing the AI decision."
+            )
 
-        overlay = cv2.addWeighted(
-            np.array(image), 0.6, heatmap, 0.4, 0
-        )
+        # ---------------- REAL MODEL ----------------
+        else:
+            with torch.no_grad():
+                prob = torch.sigmoid(model(x)).item()
 
-        st.subheader("🧠 Explainability (Grad-CAM)")
-        st.image(overlay, caption="Highlighted regions influenced the decision")
+            label = "DEFECT" if prob > 0.5 else "NO DEFECT"
 
-        st.caption("""
-        🔴 Red regions indicate areas the model focused on while making its decision.
-        """)
+            st.subheader("🔎 Prediction")
+            st.write(f"**Result:** {label}")
+            st.write(f"**Confidence:** {prob:.2f}")
+
+            heatmap = cam.generate(x)
+            heatmap = cv2.resize(heatmap, image.size)
+            heatmap = cv2.applyColorMap(
+                np.uint8(255 * heatmap), cv2.COLORMAP_JET
+            )
+
+            overlay = cv2.addWeighted(
+                np.array(image), 0.6, heatmap, 0.4, 0
+            )
+
+            st.subheader("🧠 Explainability (Grad-CAM)")
+            st.image(overlay)
 
 # --------------------------------------------------
-# PAGE 6 — LIMITATIONS & ETHICS
+# PAGE 3 — ETHICS
 # --------------------------------------------------
 elif page == "⚠ Limitations & Ethics":
     st.title("Limitations & Ethical Considerations")
 
     st.markdown("""
-    ### ⚠ Limitations
-    - Model works only on **industrial texture images**
-    - Performance drops on unseen textures
-    - Sensitive to image quality and lighting
+    ### Limitations
+    - Works only on industrial texture images
     - Not suitable for natural or medical images
+    - Sensitive to lighting and resolution
 
-    ### ⚖ Ethical Considerations
-    - Should not be used as a sole decision-maker
-    - Human verification is required for critical cases
-    - Transparency via explainability is essential
-    - Avoid misuse outside intended industrial domain
+    ### Ethical Use
+    - Should not replace human inspectors
+    - Used as a decision-support system
+    - Explainability improves transparency
 
-    ### ✅ Responsible AI Use
-    This system is designed as a **decision support tool**
-    to assist quality inspectors, not replace them.
+    ### Responsible AI
+    Human oversight is required for critical decisions.
     """)
 
-    st.success("Explainable AI improves trust, transparency, and accountability.")
