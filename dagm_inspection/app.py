@@ -51,68 +51,78 @@ def load_model_safe():
 # Classical CV Defect Detection (DEMO MODE)
 # --------------------------------------------------
 def classical_defect_detection(image_np):
+    """
+    image_np: RGB numpy image
+    returns: RGB image with box + circle, defect_score
+    """
+
+    # --- 1. Convert to grayscale ---
     gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
 
-    # Step 1: Edge detection
-    edges = cv2.Canny(gray, 80, 160)
+    # --- 2. Enhance contrast (CRITICAL) ---
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
 
-    # Step 2: Morphological closing to connect defect regions
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # --- 3. Edge + region detection ---
+    edges = cv2.Canny(enhanced, 60, 140)
 
-    # Step 3: Binary threshold
-    _, binary = cv2.threshold(closed, 50, 255, cv2.THRESH_BINARY)
+    # --- 4. Morphological closing (connect scratch) ---
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=3)
 
-    # Step 4: Find contours (potential defect regions)
+    # --- 5. Fill regions ---
+    filled = cv2.dilate(closed, kernel, iterations=2)
+
+    # --- 6. Find contours ---
     contours, _ = cv2.findContours(
-        binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
+    # Copy image for drawing
     overlay = image_np.copy()
+    h, w, _ = image_np.shape
     defect_score = 0.0
 
     if contours:
-        # Select largest contour (most significant defect)
+        # --- 7. Select largest meaningful contour ---
         largest = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(largest)
 
-        # Ignore very small noise
-        if area > 200:  # threshold can be tuned
-            defect_score = area / (image_np.shape[0] * image_np.shape[1])
+        if area > 500:  # STRICT threshold (prevents noise)
+            defect_score = area / (h * w)
 
-            # Bounding box
-            x, y, w, h = cv2.boundingRect(largest)
+            # --- Bounding box ---
+            x, y, bw, bh = cv2.boundingRect(largest)
             cv2.rectangle(
                 overlay,
                 (x, y),
-                (x + w, y + h),
-                (0, 0, 255),
-                2
+                (x + bw, y + bh),
+                (255, 0, 0),  # RED (RGB)
+                4             # THICK
             )
 
-            # Minimum enclosing circle
+            # --- Enclosing circle ---
             (cx, cy), radius = cv2.minEnclosingCircle(largest)
             cv2.circle(
                 overlay,
                 (int(cx), int(cy)),
                 int(radius),
-                (255, 0, 0),
-                2
+                (0, 0, 255),  # BLUE (RGB)
+                4
             )
 
-            # Label
+            # --- Label ---
             cv2.putText(
                 overlay,
                 "DEFECT",
-                (x, y - 10),
+                (x, max(y - 12, 20)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 0, 255),
-                2
+                0.9,
+                (255, 0, 0),
+                3
             )
 
     return overlay, defect_score
-
 
 # --------------------------------------------------
 # PAGE 1 — OVERVIEW
@@ -163,18 +173,18 @@ elif page == "🔍 Inspect Industrial Image":
             overlay, defect_score = classical_defect_detection(image_np)
 
             st.subheader("🔎 Inspection Result")
+        if defect_score > 0.003:
+            st.error(f"⚠ Defect Detected (Severity Score: {defect_score:.4f})")
+        else:
+            st.success(f"✅ No Significant Defect (Score: {defect_score:.4f})")
 
-            if defect_score > 0.02:
-                st.error(f"⚠ Defect Likely Detected (Score: {defect_score:.3f})")
-            else:
-                st.success(f"✅ Surface Appears Normal (Score: {defect_score:.3f})")
             st.subheader("🧠 Defect Localization")
 
             st.image(
                 overlay,
-                caption="🔲 Red box: defect boundary | 🔵 Blue circle: defect region"
+                caption="🔴 Red box: defect boundary | 🔵 Blue circle: defect region",
+                use_column_width=True
             )
-
 
             st.info("""
             **How this works (Simple Explanation):**
