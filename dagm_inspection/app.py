@@ -56,66 +56,77 @@ def load_model_safe():
 # --------------------------------------------------
 def classical_defect_detection(image_rgb):
     """
-    image_rgb: RGB numpy image
-    returns: annotated RGB image, defect_score
+    Smart industrial defect detection:
+    - Detects localized anomaly clusters
+    - Avoids false positives on normal textures
     """
 
     h, w, _ = image_rgb.shape
-
-    # 1. Grayscale
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
 
-    # 2. Contrast enhancement (critical)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
+    # 1. Texture response (gradient magnitude)
+    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    grad_mag = cv2.magnitude(grad_x, grad_y)
 
-    # 3. Edge detection
-    edges = cv2.Canny(enhanced, 60, 140)
+    # Normalize
+    grad_mag = cv2.normalize(grad_mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
-    # 4. Morphological closing (connect thin scratches)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=3)
+    # 2. Global texture baseline
+    global_mean = np.mean(grad_mag)
+    global_std = np.std(grad_mag)
 
-    # 5. Fill regions
-    filled = cv2.dilate(closed, kernel, iterations=2)
+    # 3. Adaptive threshold (statistical)
+    thresh = global_mean + 2.5 * global_std
+    _, anomaly_map = cv2.threshold(grad_mag, thresh, 255, cv2.THRESH_BINARY)
 
-    # 6. Find contours
+    # 4. Morphology to group defects
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    anomaly_map = cv2.morphologyEx(anomaly_map, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    # 5. Find candidate regions
     contours, _ = cv2.findContours(
-        filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        anomaly_map, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
     overlay = image_rgb.copy()
     defect_score = 0.0
 
     if contours:
-        # Largest meaningful contour
+        # Compute global anomaly density
+        total_anomaly_pixels = np.sum(anomaly_map > 0)
+        global_density = total_anomaly_pixels / (h * w)
+
+        # Select most significant region
         largest = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(largest)
+        region_density = area / (h * w)
 
-        if area > 500:  # noise suppression threshold
-            defect_score = area / (h * w)
+        # 🔑 DECISION LOGIC (THIS IS THE INTELLIGENCE)
+        if region_density > 0.002 and region_density > 5 * global_density:
 
-            # Bounding box (RED)
+            defect_score = region_density
+
+            # Bounding box
             x, y, bw, bh = cv2.boundingRect(largest)
             cv2.rectangle(
                 overlay,
                 (x, y),
                 (x + bw, y + bh),
-                (255, 0, 0),  # RED (RGB)
+                (255, 0, 0),
                 4
             )
 
-            # Enclosing circle (BLUE)
+            # Enclosing circle
             (cx, cy), radius = cv2.minEnclosingCircle(largest)
             cv2.circle(
                 overlay,
                 (int(cx), int(cy)),
                 int(radius),
-                (0, 0, 255),  # BLUE (RGB)
+                (0, 0, 255),
                 4
             )
 
-            # Label
             cv2.putText(
                 overlay,
                 "DEFECT",
@@ -127,6 +138,7 @@ def classical_defect_detection(image_rgb):
             )
 
     return overlay, defect_score
+
 
 # --------------------------------------------------
 # PAGE 1 — OVERVIEW
